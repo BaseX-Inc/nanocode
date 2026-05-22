@@ -3,7 +3,7 @@
 
 import os
 
-NVIDIA_KEY = os.environ.get("NVIDIA_API_KEY") or os.environ.get("NVIDIA_API_KEY_FALLBACK", "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")
+NVIDIA_KEY = os.environ.get("NVIDIA_API_KEY") or os.environ.get("NVIDIA_API_KEY_FALLBACK")
 API_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
 MODEL = os.environ.get("MODEL", "moonshotai/kimi-k2.6")
 
