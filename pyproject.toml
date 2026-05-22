@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nanocode"
+version = "0.1.0"
+description = "Minimal claude code alternative"
+requires-python = ">=3.9"
+
+[project.scripts]
+nanocode = "nanocode:main"
