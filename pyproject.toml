@@ -9,4 +9,4 @@ description = "Minimal claude code alternative"
 requires-python = ">=3.9"
 
 [project.scripts]
-nanocode = "nanocode:main"
+nanocode = "nanocode.cli:main"
