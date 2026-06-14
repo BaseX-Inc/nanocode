@@ -4,10 +4,13 @@
 import json
 import os
 import sys
+import time
+import re
+import threading
 import urllib.request
 from .config import (
     API_URL, API_KEY, MODEL, MODELS,
-    RESET, BOLD, DIM, BLUE, CYAN, GREEN, RED
+    RESET, BOLD, DIM, BLUE, CYAN, GREEN, YELLOW, RED
 )
 from .tools import make_schema, run_tool, TOOLS
 from .session import load_session, save_session, delete_session
@@ -20,15 +23,7 @@ def separator():
         return f"{DIM}{'─' * 80}{RESET}"
 
 
-def render_markdown(text):
-    import re
-    # Strip <think> blocks from output
-    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
-    return re.sub(r"\*\*(.+?)\*\*", f"{BOLD}\\1{RESET}", text)
-
-
 def pick_model(messages):
-    """Auto-route: use fast model for short exchanges, quality for complex."""
     if MODEL != "auto":
         return MODEL
     total_chars = sum(len(m.get("content", "")) for m in messages)
@@ -38,8 +33,40 @@ def pick_model(messages):
     return MODELS["fast"]
 
 
+class ThinkingSpinner:
+    """Animated spinner shown during <think> blocks."""
+    def __init__(self):
+        self._active = False
+        self._thread = None
+        self._elapsed = 0
+
+    def start(self):
+        self._active = True
+        self._elapsed = 0
+        self._thread = threading.Thread(target=self._spin, daemon=True)
+        self._thread.start()
+
+    def _spin(self):
+        frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        i = 0
+        t0 = time.time()
+        while self._active:
+            self._elapsed = time.time() - t0
+            sys.stdout.write(f"\r{DIM}{frames[i % len(frames)]} thinking ({self._elapsed:.0f}s){RESET}  ")
+            sys.stdout.flush()
+            time.sleep(0.08)
+            i += 1
+
+    def stop(self):
+        self._active = False
+        if self._thread:
+            self._thread.join(timeout=0.2)
+        sys.stdout.write(f"\r{DIM}● thought for {self._elapsed:.1f}s{RESET}      \n")
+        sys.stdout.flush()
+
+
 def call_api_stream(messages, system_prompt):
-    """Call API with streaming, yield content chunks and tool calls."""
+    """Call API with streaming. Handles think blocks and content."""
     model = pick_model(messages)
     body = json.dumps({
         "model": model,
@@ -51,8 +78,7 @@ def call_api_stream(messages, system_prompt):
     }).encode()
 
     req = urllib.request.Request(
-        API_URL,
-        data=body,
+        API_URL, data=body,
         headers={
             "Content-Type": "application/json",
             "Authorization": f"Bearer {API_KEY}",
@@ -61,9 +87,10 @@ def call_api_stream(messages, system_prompt):
     )
     resp = urllib.request.urlopen(req)
 
-    content_buf = ""
-    tool_calls = []
-    current_tc = {}
+    full_content = ""
+    in_think = False
+    spinner = ThinkingSpinner()
+    content_started = False
 
     for raw_line in resp:
         line = raw_line.decode("utf-8").strip()
@@ -78,54 +105,53 @@ def call_api_stream(messages, system_prompt):
             continue
 
         delta = chunk.get("choices", [{}])[0].get("delta", {})
+        text = delta.get("content", "")
+        if not text:
+            continue
 
-        # Content streaming
-        if delta.get("content"):
-            content_buf += delta["content"]
-            yield ("content", delta["content"])
+        full_content += text
 
-        # Tool call streaming
-        if delta.get("tool_calls"):
-            for tc_delta in delta["tool_calls"]:
-                idx = tc_delta.get("index", 0)
-                while len(tool_calls) <= idx:
-                    tool_calls.append({"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
-                if tc_delta.get("id"):
-                    tool_calls[idx]["id"] = tc_delta["id"]
-                fn = tc_delta.get("function", {})
-                if fn.get("name"):
-                    tool_calls[idx]["function"]["name"] = fn["name"]
-                if fn.get("arguments"):
-                    tool_calls[idx]["function"]["arguments"] += fn["arguments"]
+        # Handle <think> blocks
+        if "<think>" in text:
+            in_think = True
+            spinner.start()
+            continue
+        if "</think>" in text:
+            in_think = False
+            spinner.stop()
+            continue
+        if in_think:
+            continue
 
-    if tool_calls:
-        yield ("tool_calls", tool_calls)
-    if content_buf:
-        yield ("content_done", content_buf)
+        # Stream visible content
+        if not content_started:
+            sys.stdout.write(f"\n{CYAN}⏺{RESET} ")
+            content_started = True
+        sys.stdout.write(text)
+        sys.stdout.flush()
 
+    if content_started:
+        print()
 
-def call_api(messages, system_prompt):
-    """Non-streaming fallback."""
-    model = pick_model(messages)
-    body = json.dumps({
-        "model": model,
-        "max_tokens": 8192,
-        "messages": [{"role": "system", "content": system_prompt}, *messages],
-        "tools": make_schema(),
-        "tool_choice": "auto",
-    }).encode()
+    # Extract tool calls from content (model uses <tool_call> tags)
+    tool_calls = []
+    tc_matches = re.findall(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", full_content, re.DOTALL)
+    for i, tc_json in enumerate(tc_matches):
+        try:
+            tc = json.loads(tc_json)
+            tool_calls.append({
+                "id": f"call_{i}",
+                "type": "function",
+                "function": {"name": tc["name"], "arguments": json.dumps(tc.get("arguments", {}))},
+            })
+        except (json.JSONDecodeError, KeyError):
+            pass
 
-    req = urllib.request.Request(
-        API_URL,
-        data=body,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {API_KEY}",
-            "User-Agent": "nanocode/0.2",
-        },
-    )
-    resp = urllib.request.urlopen(req)
-    return json.loads(resp.read())
+    # Strip thinking and tool_call tags from content for history
+    clean = re.sub(r"<think>.*?</think>", "", full_content, flags=re.DOTALL)
+    clean = re.sub(r"<tool_call>.*?</tool_call>", "", clean, flags=re.DOTALL).strip()
+
+    return clean, tool_calls
 
 
 def main():
@@ -138,7 +164,7 @@ def main():
     model_display = MODEL if MODEL != "auto" else f"auto ({MODELS['fast']}/{MODELS['quality']})"
 
     print(f"{BOLD}nanocode{RESET} | {DIM}{model_display}{RESET} | {os.getcwd()}{resumed}\n")
-    system_prompt = f"Concise coding assistant. cwd: {os.getcwd()}"
+    system_prompt = f"Concise coding assistant. cwd: {os.getcwd()}. When using tools, output a tool_call block."
 
     while True:
         try:
@@ -152,7 +178,7 @@ def main():
             if user_input == "/c":
                 messages = []
                 delete_session()
-                print(f"{GREEN}⏺ Cleared conversation{RESET}")
+                print(f"{GREEN}⏺ Cleared{RESET}")
                 continue
             if user_input == "/m":
                 print(f"{DIM}Model: {pick_model(messages)}{RESET}")
@@ -161,53 +187,15 @@ def main():
             messages.append({"role": "user", "content": user_input})
 
             while True:
-                # Try streaming first
-                content = ""
-                tool_calls = []
-                try:
-                    printed_prefix = False
-                    in_think = False
-                    for event_type, event_data in call_api_stream(messages, system_prompt):
-                        if event_type == "content":
-                            # Filter out <think>...</think> blocks from stream
-                            if "<think>" in event_data:
-                                in_think = True
-                                event_data = event_data.split("<think>")[0]
-                            if "</think>" in event_data:
-                                in_think = False
-                                event_data = event_data.split("</think>")[-1]
-                                continue
-                            if in_think:
-                                continue
-                            if event_data:
-                                if not printed_prefix:
-                                    sys.stdout.write(f"\n{CYAN}⏺{RESET} ")
-                                    printed_prefix = True
-                                sys.stdout.write(event_data)
-                                sys.stdout.flush()
-                        elif event_type == "content_done":
-                            content = event_data
-                        elif event_type == "tool_calls":
-                            tool_calls = event_data
-                    if printed_prefix:
-                        print()
-                except Exception:
-                    # Fallback to non-streaming
-                    response = call_api(messages, system_prompt)
-                    choice = response.get("choices", [{}])[0]
-                    msg = choice.get("message", {})
-                    tool_calls = msg.get("tool_calls") or []
-                    content = msg.get("content") or ""
-                    if content:
-                        print(f"\n{CYAN}⏺{RESET} {render_markdown(content)}")
+                content, tool_calls = call_api_stream(messages, system_prompt)
 
-                # Handle tool calls
+                # Execute tool calls
                 tool_results = []
                 for tc in tool_calls:
-                    fn = tc.get("function", {})
-                    tool_name = fn.get("name", "")
+                    fn = tc["function"]
+                    tool_name = fn["name"]
                     try:
-                        tool_args = json.loads(fn.get("arguments", "{}"))
+                        tool_args = json.loads(fn["arguments"])
                     except json.JSONDecodeError:
                         tool_args = {}
 
@@ -215,20 +203,18 @@ def main():
                     print(f"\n{GREEN}⏺ {tool_name}{RESET}({DIM}{arg_preview}{RESET})")
 
                     result = run_tool(tool_name, tool_args)
-                    result_lines = result.split("\n")
-                    preview = result_lines[0][:60]
-                    if len(result_lines) > 1:
-                        preview += f" ... +{len(result_lines) - 1} lines"
-                    elif len(result_lines[0]) > 60:
-                        preview += "..."
+                    lines = result.split("\n")
+                    preview = lines[0][:60]
+                    if len(lines) > 1:
+                        preview += f" ... +{len(lines)-1} lines"
                     print(f"  {DIM}⎿  {preview}{RESET}")
 
-                    tool_results.append({"role": "tool", "content": result, "tool_call_id": tc.get("id", "")})
+                    tool_results.append({"role": "tool", "content": result, "tool_call_id": tc["id"]})
 
                 if not tool_calls:
                     break
 
-                messages.append({"role": "assistant", "content": content or "", "tool_calls": tool_calls})
+                messages.append({"role": "assistant", "content": content, "tool_calls": tool_calls})
                 messages.extend(tool_results)
 
             save_session(messages)
