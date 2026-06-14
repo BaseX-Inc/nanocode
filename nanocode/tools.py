@@ -2,12 +2,21 @@
 """Tool implementations for nanocode."""
 
 import glob as globlib
+import os
+import subprocess
+import re
+import json
 from .config import DIM, RESET
 
 
 def read(args):
     """Read file with line numbers."""
-    lines = open(args["path"]).readlines()
+    path = args["path"]
+    if os.path.isdir(path):
+        # If it's a directory, list contents instead
+        entries = os.listdir(path)
+        return "\n".join(f"{'d ' if os.path.isdir(os.path.join(path, e)) else '  '}{e}" for e in sorted(entries))
+    lines = open(path).readlines()
     offset = args.get("offset", 0)
     limit = args.get("limit", len(lines))
     selected = lines[offset : offset + limit]
@@ -16,6 +25,7 @@ def read(args):
 
 def write(args):
     """Write content to file."""
+    os.makedirs(os.path.dirname(args["path"]) or ".", exist_ok=True)
     with open(args["path"], "w") as f:
         f.write(args["content"])
     return "ok"
@@ -39,25 +49,43 @@ def edit(args):
 
 
 def glob_find(args):
-    """Find files by pattern, sorted by mtime."""
-    pattern = (args.get("path", ".") + "/" + args["pat"]).replace("//", "/")
+    """Find files by pattern recursively."""
+    base = args.get("path", ".")
+    pat = args.get("pat", "**/*")
+    pattern = os.path.join(base, pat)
     files = globlib.glob(pattern, recursive=True)
-    files = sorted(
-        files,
-        key=lambda f: os.path.getmtime(f) if os.path.isfile(f) else 0,
-        reverse=True,
-    )
-    return "\n".join(files) or "none"
+    # Filter out dirs, sort by mtime
+    files = [f for f in files if os.path.isfile(f)]
+    files = sorted(files, key=lambda f: os.path.getmtime(f), reverse=True)
+    return "\n".join(files[:50]) or "none"
 
 
-import os  # needed for glob_find
+def ls(args):
+    """List directory contents with file sizes."""
+    path = args.get("path", ".")
+    try:
+        entries = os.listdir(path)
+    except Exception as e:
+        return f"error: {e}"
+    result = []
+    for e in sorted(entries):
+        full = os.path.join(path, e)
+        if os.path.isdir(full):
+            result.append(f"  {e}/")
+        else:
+            size = os.path.getsize(full)
+            result.append(f"  {e} ({size}b)")
+    return "\n".join(result) or "(empty)"
 
 
 def grep(args):
     """Search files for regex pattern."""
-    pattern = __import__("re").compile(args["pat"])
+    pattern = re.compile(args["pat"])
+    base = args.get("path", ".")
     hits = []
-    for filepath in globlib.glob(args.get("path", ".") + "/**", recursive=True):
+    for filepath in globlib.glob(base + "/**", recursive=True):
+        if not os.path.isfile(filepath):
+            continue
         try:
             for line_num, line in enumerate(open(filepath), 1):
                 if pattern.search(line):
@@ -65,9 +93,6 @@ def grep(args):
         except Exception:
             pass
     return "\n".join(hits[:50]) or "none"
-
-
-import subprocess
 
 
 def bash(args):
@@ -95,12 +120,12 @@ def bash(args):
 
 TOOLS = {
     "read": (
-        "Read file with line numbers (file path, not directory)",
+        "Read a file (with line numbers) or list directory contents",
         {"path": "string", "offset": "number?", "limit": "number?"},
         read,
     ),
     "write": (
-        "Write content to file",
+        "Write content to file (creates dirs if needed)",
         {"path": "string", "content": "string"},
         write,
     ),
@@ -109,9 +134,14 @@ TOOLS = {
         {"path": "string", "old": "string", "new": "string", "all": "boolean?"},
         edit,
     ),
+    "ls": (
+        "List directory contents with sizes",
+        {"path": "string?"},
+        ls,
+    ),
     "glob": (
-        "Find files by pattern, sorted by mtime",
-        {"pat": "string", "path": "string?"},
+        "Find files recursively by pattern (default **/*)",
+        {"pat": "string?", "path": "string?"},
         glob_find,
     ),
     "grep": (
@@ -133,9 +163,6 @@ def run_tool(name, args):
         return TOOLS[name][2](args)
     except Exception as err:
         return f"error: {err}"
-
-
-import json
 
 
 def make_schema():
