@@ -3,9 +3,16 @@
 
 import os
 
-NVIDIA_KEY = os.environ.get("NVIDIA_API_KEY") or os.environ.get("NVIDIA_API_KEY_FALLBACK")
-API_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
-MODEL = os.environ.get("MODEL", "moonshotai/kimi-k2.6")
+API_KEY = os.environ.get("NANOCODE_API_KEY") or os.environ.get("AEGIS_API_KEY", "")
+API_BASE = os.environ.get("NANOCODE_API_BASE", "https://api.basex.stanl.ink")
+API_URL = f"{API_BASE}/v1/chat/completions"
+MODEL = os.environ.get("NANOCODE_MODEL", "auto")
+
+# Auto-routing models
+MODELS = {
+    "fast": "qwen3-30b-moe",
+    "quality": "qwen3-32b",
+}
 
 # Session config
 SESSION_DIR = os.path.expanduser("~/.nanocode/sessions")

@@ -1,46 +1,53 @@
 # nanocode
 
-Minimal Claude Code alternative. Single Python file, zero dependencies, ~250 lines.
-
-Built using Claude Code, then used to build itself.
+Minimal agentic coding CLI. Zero dependencies, ~200 lines of core logic. Streams responses in real-time.
 
 ![screenshot](screenshot.png)
 
 ## Features
 
-- Full agentic loop with tool use
-- Tools: `read`, `write`, `edit`, `glob`, `grep`, `bash`
-- Conversation history
+- Full agentic loop with tool use (read, write, edit, glob, grep, bash)
+- **Streaming** responses with real-time output
+- **Auto model routing** — picks fast or quality model based on context complexity
+- Conversation persistence per-project
 - Colored terminal output
 
-## Usage
+## Setup
 
 ```bash
-export ANTHROPIC_API_KEY="your-key"
-python nanocode.py
+pip install -e .
+export AEGIS_API_KEY="your-key"
+nanocode
 ```
 
-### OpenRouter
-
-Use [OpenRouter](https://openrouter.ai) to access any model:
+Or without installing:
 
 ```bash
-export OPENROUTER_API_KEY="your-key"
-python nanocode.py
+export AEGIS_API_KEY="your-key"
+python -m nanocode
 ```
 
-To use a different model:
+## Configuration
 
-```bash
-export OPENROUTER_API_KEY="your-key"
-export MODEL="openai/gpt-5.2"
-python nanocode.py
-```
+| Env Var | Default | Description |
+|---------|---------|-------------|
+| `AEGIS_API_KEY` or `NANOCODE_API_KEY` | — | API key (required) |
+| `NANOCODE_API_BASE` | `https://api.basex.stanl.ink` | API base URL |
+| `NANOCODE_MODEL` | `auto` | Model ID or `auto` |
+
+### Models
+
+When `NANOCODE_MODEL=auto` (default):
+- **qwen3-30b-moe** — used for short/simple tasks (fast, MoE)
+- **qwen3-32b** — used for complex multi-step tasks (dense, higher quality)
+
+Override with any model ID: `NANOCODE_MODEL=qwen3-32b`
 
 ## Commands
 
-- `/c` - Clear conversation
-- `/q` or `exit` - Quit
+- `/c` — Clear conversation
+- `/m` — Show current model
+- `/q` or `exit` — Quit
 
 ## Tools
 
@@ -52,19 +59,6 @@ python nanocode.py
 | `glob` | Find files by pattern, sorted by mtime |
 | `grep` | Search files for regex |
 | `bash` | Run shell command |
-
-## Example
-
-```
-────────────────────────────────────────
-❯ what files are here?
-────────────────────────────────────────
-
-⏺ Glob(**/*.py)
-  ⎿  nanocode.py
-
-⏺ There's one Python file: nanocode.py
-```
 
 ## License
 
