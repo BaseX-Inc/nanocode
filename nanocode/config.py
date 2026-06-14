@@ -4,7 +4,7 @@
 import os
 
 API_KEY = os.environ.get("NANOCODE_API_KEY") or os.environ.get("AEGIS_API_KEY", "")
-API_BASE = os.environ.get("NANOCODE_API_BASE", "https://api.basex.stanl.ink")
+API_BASE = os.environ.get("NANOCODE_API_BASE", "https://stanlinktechhub--aegis-inference-fastapi-app.modal.run")
 API_URL = f"{API_BASE}/v1/chat/completions"
 MODEL = os.environ.get("NANOCODE_MODEL", "auto")
 

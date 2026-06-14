@@ -53,15 +53,15 @@ def api_call(messages, tools):
         "tool_choice": "auto",
     }).encode()
 
-    req = urllib.request.Request(
-        API_URL, data=body,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {API_KEY}",
-            "User-Agent": "nanocode/0.3",
-        },
-    )
-    resp = urllib.request.urlopen(req, timeout=180)
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "nanocode/0.3",
+    }
+    if API_KEY:
+        headers["Authorization"] = f"Bearer {API_KEY}"
+
+    req = urllib.request.Request(API_URL, data=body, headers=headers)
+    resp = urllib.request.urlopen(req, timeout=300)
     return json.loads(resp.read())
 
 
@@ -148,7 +148,7 @@ def agent_loop(messages, tools_schema):
 
 
 def main():
-    if not API_KEY:
+    if not API_KEY and "modal.run" not in API_URL:
         print(f"{RED}Set NANOCODE_API_KEY or AEGIS_API_KEY{RESET}")
         sys.exit(1)
 
