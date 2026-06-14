@@ -56,6 +56,7 @@ def call_api_stream(messages, system_prompt):
         headers={
             "Content-Type": "application/json",
             "Authorization": f"Bearer {API_KEY}",
+            "User-Agent": "nanocode/0.2",
         },
     )
     resp = urllib.request.urlopen(req)
@@ -120,6 +121,7 @@ def call_api(messages, system_prompt):
         headers={
             "Content-Type": "application/json",
             "Authorization": f"Bearer {API_KEY}",
+            "User-Agent": "nanocode/0.2",
         },
     )
     resp = urllib.request.urlopen(req)
