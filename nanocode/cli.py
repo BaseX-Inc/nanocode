@@ -174,7 +174,7 @@ def main():
 
     print(f"{BOLD}nanocode{RESET} | {DIM}{model_display}{RESET} | {os.getcwd()}{resumed}\n")
     system_prompt = (
-        f"Concise coding assistant. cwd: {os.getcwd()}\n"
+        f"/no_think\nConcise coding assistant. cwd: {os.getcwd()}\n"
         "When you need to use a tool, output ONLY a <tool_call> block with JSON.\n"
         "Do NOT explain before calling tools. Just call them."
     )
