@@ -34,7 +34,6 @@ def pick_model(messages):
 
 
 class ThinkingSpinner:
-    """Animated spinner shown during <think> blocks."""
     def __init__(self):
         self._active = False
         self._thread = None
@@ -52,7 +51,7 @@ class ThinkingSpinner:
         t0 = time.time()
         while self._active:
             self._elapsed = time.time() - t0
-            sys.stdout.write(f"\r{DIM}{frames[i % len(frames)]} thinking ({self._elapsed:.0f}s){RESET}  ")
+            sys.stdout.write(f"\r{DIM}{frames[i % len(frames)]} thinking ({self._elapsed:.0f}s){RESET}   ")
             sys.stdout.flush()
             time.sleep(0.08)
             i += 1
@@ -61,18 +60,30 @@ class ThinkingSpinner:
         self._active = False
         if self._thread:
             self._thread.join(timeout=0.2)
-        sys.stdout.write(f"\r{DIM}● thought for {self._elapsed:.1f}s{RESET}      \n")
+        sys.stdout.write(f"\r{DIM}● thought for {self._elapsed:.1f}s{RESET}        \n")
         sys.stdout.flush()
 
 
-def call_api_stream(messages, system_prompt):
-    """Call API with streaming. Handles think blocks and content."""
+def stream_request(messages, system_prompt):
+    """Stream from API, return full raw content."""
     model = pick_model(messages)
+    # Build messages for API — flatten tool results into assistant context
+    api_messages = [{"role": "system", "content": system_prompt}]
+    for m in messages:
+        if m.get("role") == "tool":
+            # Pack tool results as assistant context
+            api_messages.append({"role": "assistant", "content": f"[tool result]: {m['content']}"})
+        elif m.get("role") == "assistant":
+            # Strip tool_calls metadata, just keep content
+            api_messages.append({"role": "assistant", "content": m.get("content", "")})
+        else:
+            api_messages.append({"role": m["role"], "content": m.get("content", "")})
+
     body = json.dumps({
         "model": model,
         "max_tokens": 8192,
         "stream": True,
-        "messages": [{"role": "system", "content": system_prompt}, *messages],
+        "messages": api_messages,
         "tools": make_schema(),
         "tool_choice": "auto",
     }).encode()
@@ -87,11 +98,8 @@ def call_api_stream(messages, system_prompt):
     )
     resp = urllib.request.urlopen(req)
 
-    full_content = ""
-    in_think = False
-    spinner = ThinkingSpinner()
-    content_started = False
-
+    # Collect full response, then process
+    full = ""
     for raw_line in resp:
         line = raw_line.decode("utf-8").strip()
         if not line.startswith("data: "):
@@ -103,55 +111,56 @@ def call_api_stream(messages, system_prompt):
             chunk = json.loads(data)
         except json.JSONDecodeError:
             continue
+        text = chunk.get("choices", [{}])[0].get("delta", {}).get("content", "")
+        full += text
 
-        delta = chunk.get("choices", [{}])[0].get("delta", {})
-        text = delta.get("content", "")
-        if not text:
-            continue
+    return full
 
-        full_content += text
 
-        # Handle <think> blocks
-        if "<think>" in text:
-            in_think = True
-            spinner.start()
-            continue
-        if "</think>" in text:
-            in_think = False
-            spinner.stop()
-            continue
-        if in_think:
-            continue
+def display_response(full_content):
+    """Display response with think animation and streamed content."""
+    # Split into think and visible parts
+    think_match = re.search(r"<think>(.*?)</think>", full_content, re.DOTALL)
 
-        # Stream visible content
-        if not content_started:
-            sys.stdout.write(f"\n{CYAN}⏺{RESET} ")
-            content_started = True
-        sys.stdout.write(text)
-        sys.stdout.flush()
+    if think_match:
+        # Show thinking animation
+        think_text = think_match.group(1)
+        # Simulate thinking time based on content length
+        spinner = ThinkingSpinner()
+        spinner.start()
+        # Wait proportional to think content (simulate)
+        duration = min(len(think_text) * 0.005, 3.0)
+        time.sleep(max(duration, 0.5))
+        spinner.stop()
 
-    if content_started:
+    # Get visible content (after </think>, without tool_call tags)
+    visible = re.sub(r"<think>.*?</think>", "", full_content, flags=re.DOTALL)
+    visible = re.sub(r"<tool_call>.*?</tool_call>", "", visible, flags=re.DOTALL).strip()
+
+    # Stream visible content char by char
+    if visible:
+        sys.stdout.write(f"\n{CYAN}⏺{RESET} ")
+        for ch in visible:
+            sys.stdout.write(ch)
+            sys.stdout.flush()
+            time.sleep(0.008)
         print()
 
-    # Extract tool calls from content (model uses <tool_call> tags)
+
+def extract_tool_calls(content):
+    """Extract tool calls from <tool_call> tags."""
     tool_calls = []
-    tc_matches = re.findall(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", full_content, re.DOTALL)
-    for i, tc_json in enumerate(tc_matches):
+    for i, match in enumerate(re.finditer(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", content, re.DOTALL)):
         try:
-            tc = json.loads(tc_json)
+            tc = json.loads(match.group(1))
             tool_calls.append({
                 "id": f"call_{i}",
-                "type": "function",
-                "function": {"name": tc["name"], "arguments": json.dumps(tc.get("arguments", {}))},
+                "name": tc["name"],
+                "args": tc.get("arguments", {}),
             })
         except (json.JSONDecodeError, KeyError):
             pass
-
-    # Strip thinking and tool_call tags from content for history
-    clean = re.sub(r"<think>.*?</think>", "", full_content, flags=re.DOTALL)
-    clean = re.sub(r"<tool_call>.*?</tool_call>", "", clean, flags=re.DOTALL).strip()
-
-    return clean, tool_calls
+    return tool_calls
 
 
 def main():
@@ -164,7 +173,11 @@ def main():
     model_display = MODEL if MODEL != "auto" else f"auto ({MODELS['fast']}/{MODELS['quality']})"
 
     print(f"{BOLD}nanocode{RESET} | {DIM}{model_display}{RESET} | {os.getcwd()}{resumed}\n")
-    system_prompt = f"Concise coding assistant. cwd: {os.getcwd()}. When using tools, output a tool_call block."
+    system_prompt = (
+        f"Concise coding assistant. cwd: {os.getcwd()}\n"
+        "When you need to use a tool, output ONLY a <tool_call> block with JSON.\n"
+        "Do NOT explain before calling tools. Just call them."
+    )
 
     while True:
         try:
@@ -186,36 +199,35 @@ def main():
 
             messages.append({"role": "user", "content": user_input})
 
-            while True:
-                content, tool_calls = call_api_stream(messages, system_prompt)
+            # Agentic loop
+            for _ in range(10):  # max 10 tool iterations
+                full_content = stream_request(messages, system_prompt)
+                tool_calls = extract_tool_calls(full_content)
 
-                # Execute tool calls
-                tool_results = []
+                # Display thinking + visible content
+                display_response(full_content)
+
+                if not tool_calls:
+                    # Clean content for history
+                    clean = re.sub(r"<think>.*?</think>", "", full_content, flags=re.DOTALL)
+                    clean = re.sub(r"<tool_call>.*?</tool_call>", "", clean, flags=re.DOTALL).strip()
+                    messages.append({"role": "assistant", "content": clean})
+                    break
+
+                # Execute tools
+                messages.append({"role": "assistant", "content": full_content})
                 for tc in tool_calls:
-                    fn = tc["function"]
-                    tool_name = fn["name"]
-                    try:
-                        tool_args = json.loads(fn["arguments"])
-                    except json.JSONDecodeError:
-                        tool_args = {}
+                    arg_preview = str(list(tc["args"].values())[0])[:50] if tc["args"] else ""
+                    print(f"\n{GREEN}⏺ {tc['name']}{RESET}({DIM}{arg_preview}{RESET})")
 
-                    arg_preview = str(list(tool_args.values())[0])[:50] if tool_args else ""
-                    print(f"\n{GREEN}⏺ {tool_name}{RESET}({DIM}{arg_preview}{RESET})")
-
-                    result = run_tool(tool_name, tool_args)
+                    result = run_tool(tc["name"], tc["args"])
                     lines = result.split("\n")
                     preview = lines[0][:60]
                     if len(lines) > 1:
                         preview += f" ... +{len(lines)-1} lines"
                     print(f"  {DIM}⎿  {preview}{RESET}")
 
-                    tool_results.append({"role": "tool", "content": result, "tool_call_id": tc["id"]})
-
-                if not tool_calls:
-                    break
-
-                messages.append({"role": "assistant", "content": content, "tool_calls": tool_calls})
-                messages.extend(tool_results)
+                    messages.append({"role": "tool", "content": result})
 
             save_session(messages)
             print()
